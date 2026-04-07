@@ -48,13 +48,20 @@ type GameState =
   | 'CHOICE_2'
   | 'DOG_HOME_SEQ'
   | 'STAGE3'
+  | 'RPS_BATTLE'
   | 'TRANSFORM_HORSE_SEQ'
+  | 'RPS_LOSS_SEQ'
   | 'ENDING_VICTORY'
   | 'ENDING_BAKER'
+  | 'ENDING_DEFEAT'
   | 'CAUGHT'
   | 'CAUGHT_STAGE3';
 
 type Difficulty = 'EASY' | 'MEDIUM' | 'HARD';
+
+type RPSMove = 'ROCK' | 'PAPER' | 'SCISSORS';
+type RPSOutcome = 'WIN' | 'LOSE' | 'DRAW';
+type RPSPhase = 'INTRO' | 'CHOOSING' | 'REVEAL' | 'RESULT';
 
 type ObstacleType =
   | 'BASKET' | 'STALL' | 'POT' | 'WALL'
@@ -136,6 +143,19 @@ export default function App() {
   const [difficulty, setDifficulty] = useState<Difficulty>('MEDIUM');
   const [bakerEndingIdx, setBakerEndingIdx] = useState(0);
 
+  // Final duel — Rock / Paper / Scissors
+  const [rpsPhase, setRpsPhase] = useState<RPSPhase>('INTRO');
+  const [playerRps, setPlayerRps] = useState<RPSMove | null>(null);
+  const [aminaRps, setAminaRps] = useState<RPSMove | null>(null);
+  const [rpsOutcome, setRpsOutcome] = useState<RPSOutcome | null>(null);
+  const rpsPhaseRef = useRef<RPSPhase>('INTRO');
+  const playerRpsCountsRef = useRef<Record<RPSMove, number>>({ ROCK: 0, PAPER: 0, SCISSORS: 0 });
+  const rpsTimeoutsRef = useRef<number[]>([]);
+
+  // Cutscenes schedule many timeouts; track them so Play Again / resets can
+  // reliably cancel any pending state changes.
+  const cutsceneTimeoutsRef = useRef<number[]>([]);
+
   const stageTitleTimeoutRef = useRef<number | null>(null);
   const lastStageTitleTriggerRef = useRef<{ stage: GameState | null; at: number }>({ stage: null, at: 0 });
   const shownStageTitlesRef = useRef<Set<GameState>>(new Set());
@@ -189,6 +209,7 @@ export default function App() {
   useEffect(() => { isMutedRef.current = isMuted; }, [isMuted]);
   useEffect(() => { isPausedRef.current = isPaused; }, [isPaused]);
   useEffect(() => { difficultyRef.current = difficulty; }, [difficulty]);
+  useEffect(() => { rpsPhaseRef.current = rpsPhase; }, [rpsPhase]);
 
   // Generate static stars once
   useEffect(() => {
@@ -377,7 +398,7 @@ export default function App() {
     }
   }, []);
 
-  const playSFX = useCallback((type: 'jump' | 'hit' | 'powerup' | 'transform' | 'spring') => {
+  const playSFX = useCallback((type: 'jump' | 'hit' | 'powerup' | 'transform' | 'spring' | 'rps_select' | 'rps_reveal' | 'rps_win' | 'rps_lose' | 'rps_draw') => {
     if (isMutedRef.current) return;
     try {
       const ctx = getCtx();
@@ -399,8 +420,125 @@ export default function App() {
       else if (type === 'powerup') { [523, 659, 784, 1047].forEach((f, i) => n(f, 0.14, now + i * 0.07, 0.1)); }
       else if (type === 'transform') { for (let i = 0; i < 8; i++) n(440 * Math.pow(0.85, i), 0.32, now + i * 0.09, 0.12, 'sawtooth'); }
       else if (type === 'spring') { n(880, 0.07, now, 0.09); n(1174, 0.09, now + 0.04, 0.07); }
+      else if (type === 'rps_select') { n(392, 0.06, now, 0.12); n(784, 0.08, now + 0.04, 0.08); }
+      else if (type === 'rps_reveal') { n(196, 0.18, now, 0.14, 'triangle'); n(98, 0.22, now + 0.06, 0.10, 'sine'); }
+      else if (type === 'rps_draw')   { [330, 330, 330].forEach((f, i) => n(f, 0.07, now + i * 0.09, 0.10, 'square')); }
+      else if (type === 'rps_win')    { [523, 659, 784, 1047].forEach((f, i) => n(f, 0.12, now + i * 0.06, 0.12)); }
+      else if (type === 'rps_lose')   { n(220, 0.22, now, 0.14, 'sawtooth'); n(164, 0.26, now + 0.06, 0.12, 'sawtooth'); n(110, 0.3, now + 0.12, 0.10, 'sawtooth'); }
     } catch {}
   }, [getCtx]);
+
+  const clearRpsTimeouts = useCallback(() => {
+    rpsTimeoutsRef.current.forEach(t => { try { window.clearTimeout(t); } catch {} });
+    rpsTimeoutsRef.current = [];
+  }, []);
+
+  const clearCutsceneTimeouts = useCallback(() => {
+    cutsceneTimeoutsRef.current.forEach(t => { try { window.clearTimeout(t); } catch {} });
+    cutsceneTimeoutsRef.current = [];
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      clearRpsTimeouts();
+      clearCutsceneTimeouts();
+    };
+  }, [clearCutsceneTimeouts, clearRpsTimeouts]);
+
+  const enterRpsBattle = useCallback(() => {
+    try { setIsPaused(false); } catch {}
+    isPausedRef.current = false;
+    clearRpsTimeouts();
+    setPlayerRps(null);
+    setAminaRps(null);
+    setRpsOutcome(null);
+    setRpsPhase('INTRO');
+    setCurrentDialogue(null);
+    // Update ref immediately so the RAF loop doesn't re-trigger.
+    gsRef.current = 'RPS_BATTLE';
+    setGameState('RPS_BATTLE');
+
+    // A quick beat before player input for a dramatic “face-off”.
+    const t1 = window.setTimeout(() => {
+      setRpsPhase('CHOOSING');
+      playSFX('rps_reveal');
+    }, 650);
+    rpsTimeoutsRef.current.push(t1);
+  }, [clearRpsTimeouts, playSFX]);
+
+  const resolveRps = useCallback((p: RPSMove, a: RPSMove): RPSOutcome => {
+    if (p === a) return 'DRAW';
+    if (p === 'ROCK' && a === 'SCISSORS') return 'WIN';
+    if (p === 'PAPER' && a === 'ROCK') return 'WIN';
+    if (p === 'SCISSORS' && a === 'PAPER') return 'WIN';
+    return 'LOSE';
+  }, []);
+
+  const pickAminaMove = useCallback((playerMove: RPSMove): RPSMove => {
+    const rnd = (): RPSMove => (['ROCK', 'PAPER', 'SCISSORS'] as const)[Math.floor(Math.random() * 3)];
+    const counter = (m: RPSMove): RPSMove => (m === 'ROCK' ? 'PAPER' : m === 'PAPER' ? 'SCISSORS' : 'ROCK');
+
+    // Slightly AI-influenced: sometimes counters the player's recent tendency.
+    const counts = playerRpsCountsRef.current;
+    const sorted = (Object.keys(counts) as RPSMove[]).sort((x, y) => counts[y] - counts[x]);
+    const mostUsed = sorted[0] ?? playerMove;
+    const tendency = Math.max(counts.ROCK, counts.PAPER, counts.SCISSORS);
+    const bias = tendency >= 2 ? 0.58 : 0.42;
+
+    // Also lightly “reads” the last move.
+    const lastRead = 0.14;
+    const r = Math.random();
+    if (r < lastRead) return counter(playerMove);
+    if (r < lastRead + bias) return counter(mostUsed);
+    return rnd();
+  }, []);
+
+  const chooseRpsMove = useCallback((move: RPSMove) => {
+    if (gsRef.current !== 'RPS_BATTLE') return;
+    const phase = rpsPhaseRef.current;
+    if (phase !== 'CHOOSING') return;
+
+    clearRpsTimeouts();
+    playSFX('rps_select');
+    setRpsPhase('REVEAL');
+    setPlayerRps(move);
+    setAminaRps(null);
+    setRpsOutcome(null);
+    playerRpsCountsRef.current[move] = (playerRpsCountsRef.current[move] ?? 0) + 1;
+
+    const tReveal = window.setTimeout(() => {
+      const am = pickAminaMove(move);
+      setAminaRps(am);
+      const out = resolveRps(move, am);
+      setRpsOutcome(out);
+      setRpsPhase('RESULT');
+      playSFX(out === 'WIN' ? 'rps_win' : out === 'LOSE' ? 'rps_lose' : 'rps_draw');
+
+      // Cinematic follow-through
+      if (out === 'DRAW') {
+        const tAgain = window.setTimeout(() => {
+          setPlayerRps(null);
+          setAminaRps(null);
+          setRpsOutcome(null);
+          setRpsPhase('CHOOSING');
+        }, 950);
+        rpsTimeoutsRef.current.push(tAgain);
+      } else if (out === 'WIN') {
+        const tWin = window.setTimeout(() => {
+          setGameState('TRANSFORM_HORSE_SEQ');
+          cutsceneStep.current = 0;
+        }, 1250);
+        rpsTimeoutsRef.current.push(tWin);
+      } else {
+        const tLose = window.setTimeout(() => {
+          setGameState('RPS_LOSS_SEQ');
+          cutsceneStep.current = 0;
+        }, 1250);
+        rpsTimeoutsRef.current.push(tLose);
+      }
+    }, 650);
+    rpsTimeoutsRef.current.push(tReveal);
+  }, [clearRpsTimeouts, pickAminaMove, playSFX, resolveRps]);
 
   // ─────────────────────────────────────────────
   // PARTICLES
@@ -467,6 +605,9 @@ export default function App() {
   }, []);
 
   const resetGame = useCallback((stage: GameState) => {
+    // Cancel any pending timeouts that could override a fresh state.
+    clearRpsTimeouts();
+    clearCutsceneTimeouts();
     // Synchronously update refs so the game loop sees the new state
     // immediately on the next frame, without waiting for React re-render.
     distRef.current = 0;
@@ -524,7 +665,7 @@ export default function App() {
       if (mKey) startMusic(mKey);
       else stopMusic();
     } catch {}
-  }, [showStageTitle, startMusic, stopMusic]);
+  }, [clearCutsceneTimeouts, clearRpsTimeouts, showStageTitle, startMusic, stopMusic]);
 
   const transitionStage = useCallback((stage: GameState) => {
     // Soft transition: keep current distance/background/enemy proximity, but
@@ -603,6 +744,9 @@ export default function App() {
     // Make “Play Again” resilient on mobile/touch.
     try { setIsPaused(false); } catch {}
     isPausedRef.current = false;
+    // Cancel any pending duel timers so they can't yank the state back.
+    clearRpsTimeouts();
+    clearCutsceneTimeouts();
     try { setStageTitle(null); } catch {}
     if (stageTitleTimeoutRef.current !== null) {
       try { window.clearTimeout(stageTitleTimeoutRef.current); } catch {}
@@ -626,7 +770,7 @@ export default function App() {
     setDistance(0);
     gsRef.current = 'START';
     setGameState('START');
-  }, [stopMusic]);
+  }, [clearCutsceneTimeouts, clearRpsTimeouts, stopMusic]);
 
   useEffect(() => {
     return () => {
@@ -865,6 +1009,56 @@ export default function App() {
       ctx.beginPath(); ctx.arc(34, 20 + b, 58, 0, Math.PI * 2); ctx.stroke();
       ctx.setLineDash([]);
     }
+    ctx.restore();
+  };
+
+  const drawMule = (ctx: CanvasRenderingContext2D, x: number, y: number, frame: number, tint: 'GOLD' | 'DARK' = 'GOLD') => {
+    ctx.save();
+    ctx.translate(x, y);
+    const b = Math.sin(frame * 0.04) * 3;
+    const col = tint === 'GOLD' ? '#7a4a1a' : '#3b2a1e';
+    const hi  = tint === 'GOLD' ? '#b57f2b' : '#6b4a2e';
+    // Body
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.roundRect(-60, 10 + b, 120, 56, 18); ctx.fill();
+    // Belly highlight
+    ctx.fillStyle = hi;
+    ctx.beginPath(); ctx.roundRect(-48, 26 + b, 96, 20, 10); ctx.fill();
+    // Neck
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    ctx.moveTo(35, 16 + b);
+    ctx.lineTo(72, -6 + b);
+    ctx.lineTo(86, 2 + b);
+    ctx.lineTo(54, 28 + b);
+    ctx.closePath();
+    ctx.fill();
+    // Head
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.roundRect(78, -18 + b, 44, 34, 10); ctx.fill();
+    // Ears
+    ctx.fillStyle = '#1a0f0a';
+    ctx.beginPath(); ctx.roundRect(86, -44 + b, 10, 30, 5); ctx.fill();
+    ctx.beginPath(); ctx.roundRect(104, -46 + b, 10, 32, 5); ctx.fill();
+    // Snout
+    ctx.fillStyle = hi;
+    ctx.beginPath(); ctx.roundRect(110, -10 + b, 18, 18, 7); ctx.fill();
+    ctx.fillStyle = '#1a0f0a';
+    ctx.beginPath(); ctx.arc(123, -1 + b, 3, 0, Math.PI * 2); ctx.fill();
+    // Legs
+    ctx.fillStyle = col;
+    [-40, -10, 20, 45].forEach((lx, i) => {
+      const wob = Math.sin(frame * 0.02 + i) * 3;
+      ctx.fillRect(lx, 58 + b, 16, 40 + wob);
+      ctx.fillStyle = '#1a0f0a';
+      ctx.fillRect(lx - 1, 92 + b + wob, 18, 8);
+      ctx.fillStyle = col;
+    });
+    // Tail
+    ctx.strokeStyle = col; ctx.lineWidth = 8; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(-62, 32 + b); ctx.quadraticCurveTo(-94, 16 + b, -90, -8 + b); ctx.stroke();
+    ctx.fillStyle = '#1a0f0a';
+    ctx.beginPath(); ctx.arc(-90, -10 + b, 7, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
   };
 
@@ -1358,12 +1552,52 @@ export default function App() {
       }
 
       // ── PASSIVE STATES (just draw) ──────────────
-      const passiveStates: GameState[] = ['START', 'CHOICE_1', 'CHOICE_2', 'ENDING_VICTORY', 'ENDING_BAKER', 'CAUGHT', 'CAUGHT_STAGE3'];
+      const passiveStates: GameState[] = ['START', 'CHOICE_1', 'CHOICE_2', 'RPS_BATTLE', 'ENDING_VICTORY', 'ENDING_BAKER', 'ENDING_DEFEAT', 'CAUGHT', 'CAUGHT_STAGE3'];
       if (passiveStates.includes(gs)) {
         // Draw animated background for menus
-        const bgState: GameState = gs === 'CAUGHT' ? lastStage.current : gs;
+        const bgState: GameState = gs === 'CAUGHT' ? lastStage.current : (gs === 'RPS_BATTLE' ? 'STAGE3' : gs);
         ctx.save();
-        drawBackground(ctx, bgState === 'ENDING_BAKER' ? 'STAGE2' : bgState === 'ENDING_VICTORY' ? 'STAGE3' : bgState, bgOffset.current, time);
+        drawBackground(
+          ctx,
+          bgState === 'ENDING_BAKER'
+            ? 'STAGE2'
+            : (bgState === 'ENDING_VICTORY' || bgState === 'ENDING_DEFEAT')
+              ? 'STAGE3'
+              : bgState,
+          bgOffset.current,
+          time
+        );
+
+        // RPS battle face-off vignette (keeps the climax visually alive)
+        if (gs === 'RPS_BATTLE') {
+          const pulse = 0.5 + 0.5 * Math.sin(time * 0.005);
+          const vign = ctx.createRadialGradient(CW / 2, CH / 2, 120, CW / 2, CH / 2, 480);
+          vign.addColorStop(0, `rgba(0,0,0,${0.20 + pulse * 0.08})`);
+          vign.addColorStop(1, 'rgba(0,0,0,0.78)');
+          ctx.fillStyle = vign; ctx.fillRect(0, 0, CW, CH);
+
+          const sidiX = 250;
+          const aminaX = 540;
+          const bob = Math.sin(time * 0.01) * 2;
+          drawHuman(ctx, sidiX, GY - 80 + bob, false, time * 0.01, false, true);
+          drawHuman(ctx, aminaX, GY - 90 - bob, true, time * 0.01, false);
+
+          // Magical clash line
+          ctx.strokeStyle = `rgba(255,215,0,${0.15 + pulse * 0.25})`;
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.moveTo(sidiX + 70, GY - 120);
+          ctx.quadraticCurveTo(CW / 2, GY - 180 - pulse * 30, aminaX - 40, GY - 120);
+          ctx.stroke();
+          ctx.fillStyle = `rgba(180,0,255,${0.08 + pulse * 0.14})`;
+          for (let i = 0; i < 10; i++) {
+            const a = time * 0.01 + i;
+            ctx.beginPath();
+            ctx.arc(CW / 2 + Math.cos(a) * (40 + i * 8), GY - 155 + Math.sin(a * 1.2) * (18 + i * 3), 2 + (i % 3), 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+
         ctx.restore();
         // Advance bg slowly
         bgOffset.current += 2;
@@ -1510,10 +1744,15 @@ export default function App() {
             setCurrentDialogue({ text: 'Be punished for your crimes, Amina — TRANSFORM!', speaker: 'SIDI' });
             cutsceneStep.current = 1;
             playSFX('transform');
-            setTimeout(() => { setCurrentDialogue({ text: 'The magic water struck Amina. With a blinding flash, she became a horse.', speaker: 'NARRATOR' }); cutsceneStep.current = 2; }, 4200);
+            const t = window.setTimeout(() => {
+              setCurrentDialogue({ text: 'The magic water struck Amina. With a blinding flash, she became a mule.', speaker: 'NARRATOR' });
+              cutsceneStep.current = 2;
+            }, 4200);
+            cutsceneTimeoutsRef.current.push(t);
           } else if (cutsceneStep.current === 2) {
             cutsceneStep.current = 2.5;
-            setTimeout(() => { setGameState('ENDING_VICTORY'); setCurrentDialogue(null); }, 3200);
+            const t = window.setTimeout(() => { setGameState('ENDING_VICTORY'); setCurrentDialogue(null); }, 3200);
+            cutsceneTimeoutsRef.current.push(t);
           }
           drawBackground(ctx, 'STAGE3', bgOffset.current, time);
           drawHuman(ctx, 200, GY - 80, false, 0, false, true);
@@ -1521,13 +1760,74 @@ export default function App() {
             const zap2 = Math.sin(time * 0.05) * 50;
             ctx.fillStyle = 'rgba(255,215,0,0.4)';
             ctx.beginPath(); ctx.arc(550, GY - 80, 70 + zap2, 0, Math.PI * 2); ctx.fill();
-            // Horse silhouette
-            ctx.fillStyle = '#5d3010';
-            ctx.beginPath();
-            ctx.ellipse(550, GY - 70, 60, 35, 0, 0, Math.PI * 2); ctx.fill();
-            ctx.beginPath(); ctx.arc(620, GY - 85, 25, 0, Math.PI * 2); ctx.fill();
+            // Mule silhouette
+            drawMule(ctx, 550, GY - 96, time, 'GOLD');
           } else {
             drawHuman(ctx, 520, GY - 90, true, 0, false);
+          }
+        }
+
+        if (gs === 'RPS_LOSS_SEQ') {
+          if (cutsceneStep.current === 0) {
+            setCurrentDialogue({ text: 'You thought you had me? Then wager your fate — and lose!', speaker: 'AMINA' });
+            cutsceneStep.current = 1;
+            playSFX('transform');
+            const t = window.setTimeout(() => {
+              setCurrentDialogue({ text: 'Amina snatches the magic water. Dark words spill from her veil...', speaker: 'NARRATOR' });
+              cutsceneStep.current = 2;
+            }, 3200);
+            cutsceneTimeoutsRef.current.push(t);
+          } else if (cutsceneStep.current === 2) {
+            cutsceneStep.current = 2.5;
+            const t = window.setTimeout(() => {
+              setCurrentDialogue({ text: '“Creep — become a mule!” The curse rebounds upon Sidi.', speaker: 'NARRATOR' });
+              cutsceneStep.current = 3;
+              playSFX('transform');
+            }, 2600);
+            cutsceneTimeoutsRef.current.push(t);
+          } else if (cutsceneStep.current === 3.5) {
+            cutsceneStep.current = 4;
+            const t = window.setTimeout(() => { setGameState('ENDING_DEFEAT'); setCurrentDialogue(null); }, 2600);
+            cutsceneTimeoutsRef.current.push(t);
+          }
+
+          drawBackground(ctx, 'STAGE3', bgOffset.current, time);
+          const pulse = Math.sin(time * 0.05) * 30;
+
+          // Amina (victorious) on the right
+          drawHuman(ctx, 560, GY - 90, true, time * 0.01, false);
+          // Sidi on the left, transforming
+          if (cutsceneStep.current < 3) {
+            drawHuman(ctx, 210, GY - 80, false, time * 0.01, false, true);
+          } else if (cutsceneStep.current >= 3 && cutsceneStep.current < 3.5) {
+            ctx.fillStyle = `rgba(120,0,200,${0.35 + 0.15 * Math.sin(time * 0.05)})`;
+            ctx.beginPath(); ctx.arc(235, GY - 60, 62 + pulse, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = 'rgba(255,255,255,0.35)';
+            for (let i = 0; i < 16; i++) {
+              ctx.beginPath();
+              ctx.arc(235 + Math.cos(i) * (30 + pulse), GY - 60 + Math.sin(i) * (30 + pulse), 4, 0, Math.PI * 2);
+              ctx.fill();
+            }
+            drawHuman(ctx, 210, GY - 80, false, 0, false, true);
+          } else {
+            drawMule(ctx, 235, GY - 102, time, 'DARK');
+          }
+
+          // Amina escape streak
+          if (cutsceneStep.current >= 2) {
+            ctx.strokeStyle = 'rgba(255,215,0,0.35)';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(560, GY - 120);
+            ctx.quadraticCurveTo(700, GY - 200, 830, GY - 250);
+            ctx.stroke();
+            ctx.fillStyle = 'rgba(255,215,0,0.2)';
+            ctx.beginPath(); ctx.arc(560, GY - 120, 40 + Math.sin(time * 0.04) * 10, 0, Math.PI * 2); ctx.fill();
+          }
+
+          if (cutsceneStep.current >= 3 && cutsceneStep.current < 3.5) {
+            // advance to the “after” state once the flash has peaked
+            cutsceneStep.current = 3.5;
           }
         }
 
@@ -1559,6 +1859,21 @@ export default function App() {
       // Amina speed: keep consistent across all chase stages.
       // This prevents “unavoidable” catch-up when the player runs clean.
       let aSpeed = CHASER_SPEED; // Amina/Guards base chase speed
+
+      // Stage I — Old Quarter balance:
+      // The displayed distance climbs very quickly, so any big speed jump at
+      // 1500 can feel instantaneous. NOTE: the HUD shows Math.floor(distance / 10),
+      // so 1500m on-screen == 15000 internal units.
+      // Start slightly less oppressive than the default chaser speed, then
+      // ramp up gradually after 1500 (HUD meters).
+      if (gs === 'STAGE_ALLEY') {
+        aSpeed = BASE_SPEED + 0.25;
+        const meters = distRef.current / 10;
+        const t = Math.max(0, meters - 1500);
+        const ramp = Math.min(1, t / 650);
+        // Total add after 1500: 0.10 → 0.45 over time.
+        aSpeed += 0.10 + ramp * 0.35;
+      }
       if (gs === 'STAGE2' || gs === 'STAGE2_BAKER') {
         // Dog rounds: Amina should still be threatening, but not instantly fatal.
         // Keep her slightly faster than the player to create steady pressure.
@@ -1571,10 +1886,13 @@ export default function App() {
       setDistance(distRef.current);
       bgOffset.current += pSpeed;
 
+      // (Old Quarter speed-up handled above via gradual ramp.)
+
       // Enemy distance
       if (gs === 'STAGE3') enemy.distance += (aSpeed - pSpeed);
       else enemy.distance += (pSpeed - aSpeed);
-      enemy.distance = Math.max(-50, enemy.distance);
+      // Clamp to 0 so "caught" happens exactly when distance reaches 0.
+      enemy.distance = Math.max(0, enemy.distance);
 
       // Player physics
       const targetX = player.stunTimer > 0 ? 145 : (curSpeed > 1 ? 340 : PLAYER_X);
@@ -1768,10 +2086,9 @@ export default function App() {
         if (enemy.distance <= 0) { setGameState('TRANSFORM_DOG_SEQ'); cutsceneStep.current = 0; }
         else if (d >= 6500 && enemy.distance > 180) setGameState('CHOICE_1');
       } else if (gs === 'STAGE_ALLEY') {
-        // Old quarter path: survive long enough and the curse finds you anyway.
-        // (Amina should not auto-catch purely due to higher speed.)
+        // Old quarter path: no fixed-distance ending.
+        // You only get caught when Amina closes the distance to 0.
         if (enemy.distance <= 0) { setGameState('TRANSFORM_DOG_SEQ'); cutsceneStep.current = 0; }
-        else if (d >= 4500) { setGameState('TRANSFORM_DOG_SEQ'); cutsceneStep.current = 0; }
       } else if (gs === 'STAGE_COURT') {
         if (enemy.distance <= 0) setGameState('CAUGHT');
         else if (d >= 7000) { stopMusic(); setGameState('SULTAN_SEQ'); cutsceneStep.current = 0; }
@@ -1782,7 +2099,7 @@ export default function App() {
         if (enemy.distance <= 0) setGameState('CAUGHT');
         else if (segD >= 5200) setGameState('CHOICE_2');
       } else if (gs === 'STAGE3') {
-        if (enemy.distance <= 0) { setGameState('TRANSFORM_HORSE_SEQ'); cutsceneStep.current = 0; }
+        if (enemy.distance <= 0) { enterRpsBattle(); }
         else if (enemy.distance > 950) setGameState('CAUGHT_STAGE3');
       }
 
@@ -1863,7 +2180,13 @@ export default function App() {
         tryAgain();
         return;
       }
-      if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); jump(); }
+      if (gsRef.current === 'RPS_BATTLE') {
+        if (e.code === 'KeyR' || e.code === 'Digit1') { e.preventDefault(); chooseRpsMove('ROCK'); }
+        if (e.code === 'KeyP' || e.code === 'Digit2') { e.preventDefault(); chooseRpsMove('PAPER'); }
+        if (e.code === 'KeyS' || e.code === 'Digit3') { e.preventDefault(); chooseRpsMove('SCISSORS'); }
+        return;
+      }
+      if ((e.code === 'Space' || e.code === 'ArrowUp') && gsRef.current.startsWith('STAGE')) { e.preventDefault(); jump(); }
       if (e.code === 'KeyP' && gsRef.current.startsWith('STAGE')) {
         e.preventDefault();
         setIsPaused(p => !p);
@@ -1871,7 +2194,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [jump, tryAgain]);
+  }, [chooseRpsMove, jump, tryAgain]);
 
   // ─────────────────────────────────────────────
   // RENDER
@@ -2143,6 +2466,116 @@ export default function App() {
           )}
         </AnimatePresence>
 
+        {/* ── FINAL DUEL: RPS BATTLE ── */}
+        <AnimatePresence>
+          {gameState === 'RPS_BATTLE' && (
+            <motion.div
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="absolute inset-0 z-50 text-white flex items-center justify-center"
+            >
+              <motion.div
+                initial={{ scale: 0.98, y: 18, opacity: 0 }}
+                animate={{ scale: 1, y: 0, opacity: 1 }}
+                exit={{ scale: 0.98, y: 18, opacity: 0 }}
+                transition={{ duration: 0.35 }}
+                className="absolute inset-0 bg-black/65"
+                style={{ backgroundImage: 'radial-gradient(ellipse at 50% 45%, rgba(255,215,0,0.10) 0%, rgba(120,0,200,0.10) 28%, rgba(0,0,0,0.92) 68%)' }}
+              />
+
+              <div className="relative w-[92%] max-w-xl border border-amber-700/40 bg-black/75 backdrop-blur-sm p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-amber-500 font-black text-[10px] uppercase tracking-[0.45em]">Stage III — Final Duel</div>
+                    <div className="text-amber-100 font-black text-2xl italic" style={{ fontFamily: 'Georgia, serif' }}>
+                      Rock • Paper • Scissors
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-[10px] text-amber-600/70 uppercase tracking-widest">Controls</div>
+                    <div className="text-[11px] text-amber-200/70 italic" style={{ fontFamily: 'Georgia, serif' }}>R / P / S (or 1 / 2 / 3)</div>
+                  </div>
+                </div>
+
+                <div className="mt-5 grid grid-cols-3 items-center gap-3">
+                  <div className="border border-emerald-700/25 bg-emerald-950/25 p-3">
+                    <div className="text-[10px] uppercase tracking-widest text-emerald-200/70">Sidi</div>
+                    <div className="text-lg font-black italic text-emerald-50" style={{ fontFamily: 'Georgia, serif' }}>
+                      {playerRps ? (playerRps === 'ROCK' ? 'Rock' : playerRps === 'PAPER' ? 'Paper' : 'Scissors') : (rpsPhase === 'INTRO' ? 'Face-off…' : 'Choose!')}
+                    </div>
+                  </div>
+
+                  <div className="text-center">
+                    <motion.div
+                      animate={{ scale: rpsPhase === 'CHOOSING' ? [1, 1.03, 1] : 1 }}
+                      transition={{ repeat: rpsPhase === 'CHOOSING' ? Infinity : 0, duration: 1.2, ease: 'easeInOut' }}
+                      className="text-amber-300 font-black italic text-2xl drop-shadow-[0_0_25px_rgba(255,215,0,0.35)]"
+                      style={{ fontFamily: 'Georgia, serif' }}
+                    >
+                      VS
+                    </motion.div>
+                    <div className="mt-1 text-[11px] text-amber-100/60 italic" style={{ fontFamily: 'Georgia, serif' }}>
+                      {rpsPhase === 'INTRO' ? 'The chase ends. The duel begins.' :
+                       rpsPhase === 'CHOOSING' ? 'Make your move.' :
+                       rpsPhase === 'REVEAL' ? 'Amina answers…' :
+                       rpsOutcome === 'DRAW' ? 'Clash! Again!' :
+                       rpsOutcome === 'WIN' ? 'You win the duel.' : 'You lose the duel.'}
+                    </div>
+                  </div>
+
+                  <div className="border border-purple-700/25 bg-purple-950/25 p-3 text-right">
+                    <div className="text-[10px] uppercase tracking-widest text-purple-200/70">Amina</div>
+                    <div className="text-lg font-black italic text-purple-50" style={{ fontFamily: 'Georgia, serif' }}>
+                      {aminaRps ? (aminaRps === 'ROCK' ? 'Rock' : aminaRps === 'PAPER' ? 'Paper' : 'Scissors') : (rpsPhase === 'RESULT' || rpsPhase === 'REVEAL' ? '…' : 'Waiting')}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-5 grid grid-cols-3 gap-3">
+                  {([
+                    { move: 'ROCK' as const, label: 'Rock', icon: '🪨', hint: 'Crushes Scissors' },
+                    { move: 'PAPER' as const, label: 'Paper', icon: '📜', hint: 'Covers Rock' },
+                    { move: 'SCISSORS' as const, label: 'Scissors', icon: '✂️', hint: 'Cuts Paper' },
+                  ]).map(({ move, label, icon, hint }) => {
+                    const disabled = rpsPhase !== 'CHOOSING';
+                    const active = playerRps === move;
+                    return (
+                      <motion.button
+                        key={move}
+                        whileHover={disabled ? undefined : { scale: 1.03 }}
+                        whileTap={disabled ? undefined : { scale: 0.97 }}
+                        onClick={() => chooseRpsMove(move)}
+                        disabled={disabled}
+                        className={
+                          (active
+                            ? 'bg-amber-700/70 border-amber-400/40 text-amber-50'
+                            : disabled
+                              ? 'bg-black/30 border-white/10 text-amber-100/40'
+                              : 'bg-black/45 border-amber-700/40 text-amber-100 hover:bg-black/60')
+                          + ' border px-4 py-3 text-left transition-colors'
+                        }
+                        style={{ clipPath: 'polygon(8% 0%, 100% 0%, 92% 100%, 0% 100%)' }}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="text-base font-black italic" style={{ fontFamily: 'Georgia, serif' }}>{label}</div>
+                          <div className="text-2xl">{icon}</div>
+                        </div>
+                        <div className="text-[10px] uppercase tracking-widest text-amber-600/70 mt-1">{hint}</div>
+                      </motion.button>
+                    );
+                  })}
+                </div>
+
+                <div className="mt-4 flex items-center justify-between text-[11px] text-amber-200/60 italic" style={{ fontFamily: 'Georgia, serif' }}>
+                  <div>When Sidi catches Amina, fate is decided by a duel of hands.</div>
+                  <div className={rpsOutcome === 'WIN' ? 'text-emerald-300/80' : rpsOutcome === 'LOSE' ? 'text-red-300/80' : 'text-amber-200/60'}>
+                    {rpsOutcome ? (rpsOutcome === 'WIN' ? 'Honor reclaimed.' : rpsOutcome === 'LOSE' ? 'Curse reversed.' : 'No victor.') : ''}
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* ── CAUGHT ── */}
         <AnimatePresence>
           {(gameState === 'CAUGHT' || gameState === 'CAUGHT_STAGE3') && (
@@ -2186,6 +2619,7 @@ export default function App() {
               <motion.button whileHover={{ scale: 1.04 }}
                 onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); backToStart(); }}
                 onClick={(e) => { e.preventDefault(); e.stopPropagation(); backToStart(); }}
+                style={{ touchAction: 'manipulation' }}
                 className="bg-amber-700 hover:bg-amber-600 px-12 py-4 text-lg font-black uppercase tracking-widest transition-all">
                 Play Again
               </motion.button>
@@ -2201,7 +2635,7 @@ export default function App() {
               <div className="absolute inset-0 opacity-[0.07]" style={{ backgroundImage: 'radial-gradient(circle at 2px 2px, #ffd700 1px, transparent 0)', backgroundSize: '30px 30px' }} />
               <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 20, ease: 'linear' }}
                 className="absolute inset-0 opacity-5 pointer-events-none border-[40px] border-amber-600/20 rounded-full" />
-              <div className="text-7xl mb-3">🐴</div>
+              <div className="text-7xl mb-3">🫏</div>
               <h1 className="text-7xl font-black italic text-amber-300 tracking-tight drop-shadow-[0_0_40px_rgba(255,215,0,0.5)]" style={{ fontFamily: 'Georgia, serif' }}>
                 Victory!
               </h1>
@@ -2211,13 +2645,42 @@ export default function App() {
                 <div className="h-px w-16 bg-amber-700/50" />
               </div>
               <p className="max-w-md text-amber-100/75 italic leading-relaxed text-sm mb-8" style={{ fontFamily: 'Georgia, serif' }}>
-                Sidi Numan reclaimed his honor. Amina, the sorceress ghoul, was transformed into a horse — and the tale of Baghdad's most extraordinary husband entered the annals of the One Thousand and One Nights.
+                Sidi Numan reclaimed his honor. Amina, the sorceress ghoul, was transformed into a mule — and the tale of Baghdad's most extraordinary husband entered the annals of the One Thousand and One Nights.
               </p>
               <motion.button whileHover={{ scale: 1.04 }}
                 onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); backToStart(); }}
                 onClick={(e) => { e.preventDefault(); e.stopPropagation(); backToStart(); }}
                 className="bg-amber-600 hover:bg-amber-500 px-14 py-5 text-xl font-black uppercase italic tracking-widest transition-all border border-amber-400/30"
-                style={{ fontFamily: 'Georgia, serif' }}>
+                style={{ fontFamily: 'Georgia, serif', touchAction: 'manipulation' }}>
+                Play Again
+              </motion.button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* ── ENDING: DEFEAT (RPS LOSS) ── */}
+        <AnimatePresence>
+          {gameState === 'ENDING_DEFEAT' && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+              className="absolute inset-0 flex flex-col items-center justify-center bg-[#120014] text-white p-10 z-50 text-center overflow-hidden">
+              <div className="absolute inset-0 opacity-[0.07]" style={{ backgroundImage: 'radial-gradient(circle at 2px 2px, #c084fc 1px, transparent 0)', backgroundSize: '30px 30px' }} />
+              <div className="text-7xl mb-3">🫏💧</div>
+              <h1 className="text-6xl font-black italic text-red-200 tracking-tight drop-shadow-[0_0_40px_rgba(200,50,80,0.35)]" style={{ fontFamily: 'Georgia, serif' }}>
+                Defeat.
+              </h1>
+              <div className="flex items-center gap-3 my-3">
+                <div className="h-px w-16 bg-red-800/50" />
+                <span className="text-red-300 text-xl">✦</span>
+                <div className="h-px w-16 bg-red-800/50" />
+              </div>
+              <p className="max-w-md text-red-100/70 italic leading-relaxed text-sm mb-8" style={{ fontFamily: 'Georgia, serif' }}>
+                Amina wins the duel. She steals the magic water and turns the curse back upon Sidi — leaving him a mule as she vanishes into Baghdad's night.
+              </p>
+              <motion.button whileHover={{ scale: 1.04 }}
+                onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); backToStart(); }}
+                onClick={(e) => { e.preventDefault(); e.stopPropagation(); backToStart(); }}
+                className="bg-red-700 hover:bg-red-600 px-14 py-5 text-xl font-black uppercase italic tracking-widest transition-all border border-red-400/25"
+                style={{ fontFamily: 'Georgia, serif', touchAction: 'manipulation' }}>
                 Play Again
               </motion.button>
             </motion.div>
