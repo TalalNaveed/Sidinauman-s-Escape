@@ -1765,7 +1765,8 @@ export default function App() {
             // Mule silhouette
             drawMule(ctx, 550, GY - 96, time, 'GOLD');
           } else {
-            drawHuman(ctx, 520, GY - 90, true, 0, false);
+            // After the flash, Amina should remain a mule through the end-card.
+            drawMule(ctx, 550, GY - 96, time, 'GOLD');
           }
         }
 
