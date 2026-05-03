@@ -1,0 +1,59 @@
+SIDI NUMAN’S ESCAPE — One-page Game Description
+
+Overview
+Sidi Numan’s Escape is a high-intensity narrative runner inspired by the relentless, “one-more-run” chase feel of arcade runners like Extreme Pamplona: you sprint forward through a hostile streetscape, leap hazards at the last moment, and constantly manage the pressure of a pursuer closing in. Here, that pressure is story-driven: Amina’s curse is not just backstory — it is the chase itself.
+
+Story Inspiration (Arabian Nights)
+The game adapts “The Tale of Sidi Numan” (see story.md) into playable set-pieces. In the source tale, Sidi discovers Amina’s ghoul-feasting secret in the cemetery, confronts her, and is punished by transformation. The game turns those moments into a sequence of escalating chases and branching fates:
+- The cemetery discovery ignites the first flight through Baghdad.
+- Amina’s curse transforms Sidi into a dog, forcing survival in a new body.
+- The baker episode becomes a major branch: safety and a quiet life vs. pursuing restoration and justice.
+- The final confrontation becomes interactive (not scripted) via a climactic duel.
+
+Controls & Core Loop
+- Jump: Space / Up Arrow / click / tap
+- Objective: keep moving, avoid obstacles, and manage the “pursuit distance” until you reach story gates.
+- Fail condition (chase stages): you are only “caught” when the pursuit distance reaches 0.
+
+Levels, Branches, and Endings
+Stage I — Flight Through Baghdad
+After the cemetery sequence, Sidi flees through the city in human form. Survive long enough to earn a branching choice:
+1) Race to the Sultan’s Palace (Stage II — The Sultan’s Quarter)
+   - A higher-stakes run under guard pursuit.
+   - Reaching the end triggers a story sequence where Sidi gains knowledge and a path to fight back.
+
+2) Slip into the Old Quarter (Stage I — The Old Quarter)
+   - A harsher alley run with its own obstacle set.
+   - Designed to be survivable as long as you can keep Amina from closing the distance; the only ending is being caught at distance 0.
+   - After 1500m on the HUD counter, Amina ramps up gradually to raise stakes without instantly ending the run.
+
+Stage II — The Dog’s Journey
+If Amina catches Sidi in Stage I, the curse lands: Sidi becomes a dog. The game shifts to a dog-runner moveset and different obstacle pacing. This stage includes a transition into the baker segment.
+
+Choice — The Baker Branch
+During the baker storyline, you choose:
+- Stay with the baker → Ending: Baker (a reflective “quiet fate” conclusion)
+- Follow the wise woman → a restorative sequence that sets up the final chase
+
+Stage III — The Final Chase
+The roles reverse: Sidi pursues Amina. When Sidi closes the distance to 0, the game enters a dramatic final duel rather than a fixed cutscene.
+
+Final Duel: Rock–Paper–Scissors (RPS)
+When the chase ends, the player (Sidi) and Amina enter an RPS showdown with cinematic presentation, sound feedback, and a short outcome sequence:
+- If Sidi wins: the original victory path continues — Amina is transformed into a mule.
+- If Sidi loses: Amina steals the magic water and reverses the curse — Sidi becomes the mule and Amina escapes into the night.
+
+Powerups
+Powerups appear in chase stages and provide short, punchy advantages:
+- Shield: blocks a hit from an obstacle
+- Speed: temporary speed boost for longer distance gains
+- Magic: shifts the chase distance in your favor (pushes the pursuer back, or in the final chase closes Amina’s lead)
+
+Difficulty
+Difficulty changes the game’s “texture” more than raw speed:
+- EASY: more forgiving spacing between hazards
+- MEDIUM: the intended baseline pacing
+- HARD: denser obstacle patterns and multi-spawn clusters that demand consistent timing
+
+Tone & Experience
+Sidi Numan’s Escape aims for a climactic Arabian Nights arcade thriller: fast movement, dramatic pursuit pressure, and story choices that feel like fate — with the final outcome decided by player action, not a single scripted ending.

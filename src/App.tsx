@@ -474,23 +474,25 @@ export default function App() {
     return 'LOSE';
   }, []);
 
-  const pickAminaMove = useCallback((playerMove: RPSMove): RPSMove => {
-    const rnd = (): RPSMove => (['ROCK', 'PAPER', 'SCISSORS'] as const)[Math.floor(Math.random() * 3)];
-    const counter = (m: RPSMove): RPSMove => (m === 'ROCK' ? 'PAPER' : m === 'PAPER' ? 'SCISSORS' : 'ROCK');
+  const pickAminaMove = useCallback((): RPSMove => {
+    const moves = ['ROCK', 'PAPER', 'SCISSORS'] as const;
 
-    // Slightly AI-influenced: sometimes counters the player's recent tendency.
-    const counts = playerRpsCountsRef.current;
-    const sorted = (Object.keys(counts) as RPSMove[]).sort((x, y) => counts[y] - counts[x]);
-    const mostUsed = sorted[0] ?? playerMove;
-    const tendency = Math.max(counts.ROCK, counts.PAPER, counts.SCISSORS);
-    const bias = tendency >= 2 ? 0.58 : 0.42;
+    // Fair opponent: choose uniformly at random (independent of player choice).
+    // Prefer crypto RNG when available; fall back to Math.random.
+    const cryptoObj = window.crypto;
+    if (cryptoObj?.getRandomValues) {
+      const buf = new Uint32Array(1);
+      const range = 0x100000000; // 2^32
+      const limit = range - (range % moves.length);
+      let v = limit;
+      while (v >= limit) {
+        cryptoObj.getRandomValues(buf);
+        v = buf[0];
+      }
+      return moves[v % moves.length];
+    }
 
-    // Also lightly “reads” the last move.
-    const lastRead = 0.14;
-    const r = Math.random();
-    if (r < lastRead) return counter(playerMove);
-    if (r < lastRead + bias) return counter(mostUsed);
-    return rnd();
+    return moves[Math.floor(Math.random() * moves.length)];
   }, []);
 
   const chooseRpsMove = useCallback((move: RPSMove) => {
@@ -507,7 +509,7 @@ export default function App() {
     playerRpsCountsRef.current[move] = (playerRpsCountsRef.current[move] ?? 0) + 1;
 
     const tReveal = window.setTimeout(() => {
-      const am = pickAminaMove(move);
+      const am = pickAminaMove();
       setAminaRps(am);
       const out = resolveRps(move, am);
       setRpsOutcome(out);
@@ -2175,6 +2177,16 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if ((e.code === 'Enter' || e.code === 'Space') && (gsRef.current === 'ENDING_VICTORY' || gsRef.current === 'ENDING_DEFEAT' || gsRef.current === 'ENDING_BAKER')) {
+        e.preventDefault();
+        backToStart();
+        return;
+      }
+      if (e.code === 'Enter' && gsRef.current === 'START') {
+        e.preventDefault();
+        resetGame('INTRO_GRAVE');
+        return;
+      }
       if ((e.code === 'Space' || e.code === 'Enter') && (gsRef.current === 'CAUGHT' || gsRef.current === 'CAUGHT_STAGE3')) {
         e.preventDefault();
         tryAgain();
@@ -2194,7 +2206,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [chooseRpsMove, jump, tryAgain]);
+  }, [backToStart, chooseRpsMove, jump, resetGame, tryAgain]);
 
   // ─────────────────────────────────────────────
   // RENDER
@@ -2632,7 +2644,7 @@ export default function App() {
           {gameState === 'ENDING_VICTORY' && (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
               className="absolute inset-0 flex flex-col items-center justify-center bg-[#05001a] text-white p-10 z-50 text-center overflow-hidden">
-              <div className="absolute inset-0 opacity-[0.07]" style={{ backgroundImage: 'radial-gradient(circle at 2px 2px, #ffd700 1px, transparent 0)', backgroundSize: '30px 30px' }} />
+              <div className="absolute inset-0 opacity-[0.07] pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle at 2px 2px, #ffd700 1px, transparent 0)', backgroundSize: '30px 30px' }} />
               <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 20, ease: 'linear' }}
                 className="absolute inset-0 opacity-5 pointer-events-none border-[40px] border-amber-600/20 rounded-full" />
               <div className="text-7xl mb-3">🫏</div>
@@ -2663,7 +2675,7 @@ export default function App() {
           {gameState === 'ENDING_DEFEAT' && (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
               className="absolute inset-0 flex flex-col items-center justify-center bg-[#120014] text-white p-10 z-50 text-center overflow-hidden">
-              <div className="absolute inset-0 opacity-[0.07]" style={{ backgroundImage: 'radial-gradient(circle at 2px 2px, #c084fc 1px, transparent 0)', backgroundSize: '30px 30px' }} />
+              <div className="absolute inset-0 opacity-[0.07] pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle at 2px 2px, #c084fc 1px, transparent 0)', backgroundSize: '30px 30px' }} />
               <div className="text-7xl mb-3">🫏💧</div>
               <h1 className="text-6xl font-black italic text-red-200 tracking-tight drop-shadow-[0_0_40px_rgba(200,50,80,0.35)]" style={{ fontFamily: 'Georgia, serif' }}>
                 Defeat.
